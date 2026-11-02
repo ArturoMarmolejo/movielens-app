@@ -97,7 +97,7 @@ def genre_year_stats() -> pd.DataFrame:
 def top_movies_by_genre() -> pd.DataFrame:
     if DEMO:
         return _DEMO["top"].copy()
-    return _run(f"SELECT genre, rank_in_genre, title_clean, release_year, ratings_count, avg_rating FROM {table('gold_top_movies_by_genre')}")
+    return _run(f"SELECT genre, rank_in_genre, movieId, title_clean, release_year, ratings_count, avg_rating FROM {table('gold_top_movies_by_genre')}")
 
 
 def find_movies(text: str, min_ratings: int, limit: int = 50) -> pd.DataFrame:
@@ -106,7 +106,7 @@ def find_movies(text: str, min_ratings: int, limit: int = 50) -> pd.DataFrame:
         d = d[d.title_clean.str.lower().str.contains(text.lower()) & (d.ratings_count >= min_ratings)]
         return d.sort_values("avg_rating", ascending=False).head(limit)
     return _run(
-        f"SELECT title_clean, release_year, ratings_count, avg_rating FROM {table('gold_movie_stats')} "
+        f"SELECT movieId, title_clean, release_year, ratings_count, avg_rating FROM {table('gold_movie_stats')} "
         "WHERE ratings_count >= :min_ratings AND lower(title_clean) LIKE :pattern "
         f"ORDER BY avg_rating DESC, ratings_count DESC LIMIT {int(limit)}",
         {"min_ratings": int(min_ratings), "pattern": "%" + text.lower() + "%"},
@@ -235,3 +235,30 @@ def dq_trend() -> pd.DataFrame:
         return pd.DataFrame(columns=["run_ts", "step", "ingest_date", "rows_in", "rows_out", "rejected_rows", "rejected_pct", "passed"])
     return _run(f"SELECT run_ts, step, ingest_date, rows_in, rows_out, rejected_rows, rejected_pct, passed "
                 f"FROM {table('v_dq_trend')} ORDER BY run_ts")
+
+
+
+# ---------------------------------------------------------------- poster ids
+def tmdb_ids(movie_ids) -> dict:
+    """movieId -> tmdbId for the given movie ids (from silver_links)."""
+    ids = sorted({int(i) for i in movie_ids if pd.notna(i)})
+    if DEMO or not ids:
+        return {}
+    df = _run(f"SELECT movieId, tmdbId FROM {table('silver_links')} "
+              f"WHERE tmdbId IS NOT NULL AND movieId IN ({','.join(str(i) for i in ids)})")
+    return {int(r.movieId): int(r.tmdbId) for r in df.itertuples()}
+
+
+def tmdb_ids_by_title(pairs) -> dict:
+    """(lower title, year) -> tmdbId, matching on silver_movies.title_clean and release_year."""
+    pairs = sorted({(str(t).lower(), int(y)) for t, y in pairs})[:20]
+    if DEMO or not pairs:
+        return {}
+    conds, params = [], {}
+    for i, (t, y) in enumerate(pairs):
+        conds.append(f"(lower(m.title_clean) = :t{i} AND m.release_year = :y{i})")
+        params[f"t{i}"], params[f"y{i}"] = t, y
+    df = _run(f"SELECT lower(m.title_clean) AS t, m.release_year AS y, l.tmdbId AS tmdb_id "
+              f"FROM {table('silver_movies')} m JOIN {table('silver_links')} l ON m.movieId = l.movieId "
+              f"WHERE l.tmdbId IS NOT NULL AND (" + " OR ".join(conds) + ")", params)
+    return {(r.t, int(r.y)): int(r.tmdb_id) for r in df.itertuples()}

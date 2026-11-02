@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 import data
+import posters
 
 TEAL, ORANGE, NAVY = "#0F7B7D", "#D9670F", "#1B2A41"
 
@@ -19,6 +20,29 @@ st.set_page_config(page_title="MovieLens explorer", page_icon=None, layout="wide
 @st.cache_data(ttl=600, show_spinner="Reading the Gold tables...")
 def load(name: str) -> pd.DataFrame:
     return getattr(data, name)()
+
+
+SHOW_POSTERS = False
+if posters.enabled():
+    SHOW_POSTERS = st.sidebar.checkbox("Show movie posters", value=True)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def tmdb_by_id(ids: tuple) -> dict:
+    return data.tmdb_ids(ids)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def tmdb_by_title(pairs: tuple) -> dict:
+    return data.tmdb_ids_by_title(pairs)
+
+
+def posters_by_id(df, caption_fn, n=5, per_row=5):
+    if not SHOW_POSTERS or df.empty or "movieId" not in df.columns:
+        return
+    d = df.head(n)
+    ids = tmdb_by_id(tuple(int(i) for i in d["movieId"]))
+    posters.show([(caption_fn(r), ids.get(int(r.movieId))) for r in d.itertuples()], per_row=per_row)
 
 
 st.title("MovieLens 32M explorer")
@@ -96,6 +120,7 @@ with tab_top:
     t = top[top.genre == g].sort_values("rank_in_genre")
     st.dataframe(t.rename(columns={"rank_in_genre": "Rank", "title_clean": "Title", "release_year": "Year", "ratings_count": "Ratings", "avg_rating": "Average"})
                  [["Rank", "Title", "Year", "Ratings", "Average"]], hide_index=True, width="stretch")
+    posters_by_id(t, lambda r: f"#{r.rank_in_genre} {r.title_clean}", n=5)
     st.altair_chart(
         alt.Chart(t).mark_bar(color=TEAL).encode(
             y=alt.Y("title_clean:N", sort=alt.EncodingSortField("rank_in_genre"), title=None),
@@ -112,6 +137,7 @@ with tab_find:
             res = data.find_movies(q.strip(), m)
             st.dataframe(res.rename(columns={"title_clean": "Title", "release_year": "Year", "ratings_count": "Ratings", "avg_rating": "Average"}),
                          hide_index=True, width="stretch")
+            posters_by_id(res, lambda r: f"{r.title_clean} ({int(r.release_year)})" if pd.notna(r.release_year) else r.title_clean, n=8, per_row=4)
         except Exception as e:
             st.error("The search failed.")
             st.exception(e)
@@ -216,6 +242,9 @@ with tab_compare:
             "Average rating": [round(float(r.avg_rating), 2) for _, _, r in picks],
         })
         st.dataframe(rows, hide_index=True, width="stretch")
+        if SHOW_POSTERS and all("movieId" in r.index for _, _, r in picks):
+            ids = tmdb_by_id(tuple(int(r.movieId) for _, _, r in picks))
+            posters.show([(lbl, ids.get(int(r.movieId))) for _, lbl, r in picks], per_row=2, width=170)
         diff = rows["Average rating"][0] - rows["Average rating"][1]
         if diff == 0:
             st.write("Both movies have the same average rating.")
@@ -276,6 +305,11 @@ with tab_reco:
                 sim = reco_similar(int(found.iloc[i].movieId))
                 st.dataframe(sim.rename(columns={"rank": "Rank", "similar_title": "Similar movie", "similar_year": "Year", "similarity": "Similarity"}),
                              hide_index=True, width="stretch")
+                if SHOW_POSTERS:
+                    pairs = [(found.iloc[i].title, found.iloc[i].year)] + [(s.similar_title, s.similar_year) for s in sim.head(4).itertuples()]
+                    pairs = [(str(t), int(y)) for t, y in pairs if pd.notna(y)]
+                    ids = tmdb_by_title(tuple(pairs))
+                    posters.show([(t, ids.get((t.lower(), y))) for t, y in pairs], per_row=5)
     with right:
         st.markdown("**Picks for a user**")
         uid = st.number_input("User ID (multiples of 10, starting at 10)", min_value=1, value=10, step=10, key="reco_user")
@@ -285,6 +319,10 @@ with tab_reco:
         else:
             st.dataframe(recs.rename(columns={"rank": "Rank", "title_clean": "Title", "release_year": "Year", "predicted_rating": "Predicted rating"}),
                          hide_index=True, width="stretch")
+            if SHOW_POSTERS:
+                top5 = [(str(r.title_clean), int(r.release_year)) for r in recs.head(5).itertuples() if pd.notna(r.release_year)]
+                ids = tmdb_by_title(tuple(top5))
+                posters.show([(t, ids.get((t.lower(), y))) for t, y in top5], per_row=5)
 
 
 
@@ -332,3 +370,8 @@ with tab_health:
     except Exception as e:
         st.error("Could not read the quality trend.")
         st.exception(e)
+
+
+if SHOW_POSTERS:
+    st.divider()
+    st.caption(posters.CREDIT)
